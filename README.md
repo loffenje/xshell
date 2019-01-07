@@ -1,0 +1,1 @@
+Simple shell for edu purposes. 

@@ -1,4 +1,3 @@
-#define MAX_LINE_SIZE 8
 #define MAX_HISTORY_STACK 512
 
 extern char *history[MAX_HISTORY_STACK];
@@ -14,8 +13,6 @@ extern int head;
 void init_xshell();
 
 int boot_xshell(char **args);
-
-char **parse_arguments(char *line);
 
 int fn_cd(char **args);
 

@@ -6,7 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
 #include "xshell.h"
+#include "pipes.h"
 
 #ifndef VERSION
     #define VERSION 1
@@ -84,7 +86,7 @@ int fn_history(char **args __attribute__ ((unused)))
 
 int fn_q(char **args __attribute__ ((unused)))
 {    
-    return EXIT_SUCCESS;
+    exit(EXIT_SUCCESS);
 }
 
 int fn_help(char **args)
@@ -111,75 +113,104 @@ int fn_help(char **args)
     return 1;
 }
 
-int cmds_exec(char **args)
+int cmds_exec(char *args[])
 {
     for (int i = 0; i < cmds_len(); i++) {
         if (strcmp(cmds[i], args[0]) == 0) {
             return (*cmds_fn[i])(args);
         }
+    } 
+
+    return -1;
+}
+
+void close_pipes(int pipes_len, int (*pipes)[2])
+{
+    for (int i = 0; i < pipes_len; ++i) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
     }
-       
-    pid_t process;
+}
+
+int exec_through_pipes(Command *cmd, int pipes_len, int (*pipes)[2])
+{
+    int fd = -1;
+    if ((fd = cmd->io_redirect[0]) != -1) {
+        dup2(fd, STDIN_FILENO);
+    }
+
+    if ((fd = cmd->io_redirect[1]) != -1) {
+        dup2(fd, STDOUT_FILENO);
+    }
+
+    close_pipes(pipes_len, pipes);
+    return execvp(cmd->name, cmd->args);
+}
+
+void wait_childs(int process)
+{
     int status;
 
+     do {
+        waitpid(process, &status, WUNTRACED);
+    } while (!WIFEXITED(process) && !WIFSIGNALED(process));
+}
+
+pid_t run_xshell(Command *cmd, int pipes_len, int(*pipes)[2]) 
+{
+    if (cmds_exec(cmd->args) != -1) return 1;
+
+    pid_t process;
+
     process = fork();
-    if (process == 0) {
-        if (execvp(args[0], args) == -1) {
-            perror(args[0]);
-        } 
-
-        exit(EXIT_FAILURE);
-    } else if (process < 0) {
-        perror("fail proc");
+    if (process) {
+        switch(process) {
+        case -1:
+            return -1;
+        default:
+            cmd->process = process;
+            if (pipes_len == 0) wait_childs(process);
+            return process;
+        }
     } else {
-        do {
-            waitpid(process, &status, WUNTRACED);
-        } while (!WIFEXITED(process) && !WIFSIGNALED(process));
+        exec_through_pipes(cmd, pipes_len, pipes);
+        exit(EXIT_FAILURE);
     }
-
-    return 1;
-}
-
-int boot_xshell(char **args)
-{
-    if (args[0] == NULL) {
-        return 1;
-    }
-
-    return cmds_exec(args);
-}
-
-char **parse_arguments(char *line)
-{
-    char **args = malloc(MAX_LINE_SIZE * sizeof(char *));
-    char delim[2] = " ";
-    char *arg = NULL;
-    int index = 0;
-    arg = strtok(line, delim);
-
-    while (arg != NULL) {
-        args[index] = arg;
-        index++;
-
-        arg = strtok(NULL, delim);
-    }
-
-    args[index] = NULL;
-
-    return args;
 }
 
 void init_xshell()
 {
-    int status;
+    char *line = NULL;
+
     do {
         printf("> ");
         char *line = NULL;
-        ssize_t chars = xgetline(&line, stdin);
-  
-        char **args = parse_arguments(line);
-        status = boot_xshell(args);
+        xgetline(&line, stdin);
 
-        free(args);
-    } while(status);
+        if (*line == '\0') {
+            continue;
+        }
+        
+        Pipeline *pipeline = parse_pipeline(line);
+        int pipes_len = pipeline->cmds_len - 1;
+
+        int (*pipes)[2] = calloc(sizeof(int[2]), pipes_len);
+
+        for (int i = 1; i < pipeline->cmds_len; ++i) {
+            pipe(pipes[i -1]);
+            pipeline->cmds[i]->io_redirect[STDIN_FILENO] = pipes[i-1][0];
+            pipeline->cmds[i-1]->io_redirect[STDOUT_FILENO] = pipes[i-1][1];
+        }
+
+        for (int i = 0; i < pipeline->cmds_len; ++i) {
+            run_xshell(pipeline->cmds[i], pipes_len, pipes);
+        }
+
+        close_pipes(pipes_len, pipes);
+
+        for (int i = 0; i < pipes_len; ++i) {
+            wait_childs(pipeline->cmds[i]->process);
+        }
+
+    } while(true);
 }
